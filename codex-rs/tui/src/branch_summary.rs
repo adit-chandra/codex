@@ -31,6 +31,45 @@ pub(crate) struct GitBranchDiffStats {
     pub(crate) deletions: u64,
 }
 
+/// Current checkout state shown by the `git-branch` status-line item.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StatusLineGitBranch {
+    /// Branch name, or a compact detached-HEAD label when no branch is checked out.
+    pub(crate) name: String,
+    /// Whether the working tree has tracked or untracked changes.
+    pub(crate) dirty: bool,
+    /// Commits present locally but absent from the upstream branch.
+    pub(crate) ahead: u64,
+    /// Commits present upstream but absent locally.
+    pub(crate) behind: u64,
+}
+
+impl StatusLineGitBranch {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn clean(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            dirty: false,
+            ahead: 0,
+            behind: 0,
+        }
+    }
+
+    pub(crate) fn display_label(&self) -> String {
+        let mut label = self.name.clone();
+        if self.dirty {
+            label.push('*');
+        }
+        if self.ahead > 0 {
+            label.push_str(&format!(" ↑{}", self.ahead));
+        }
+        if self.behind > 0 {
+            label.push_str(&format!(" ↓{}", self.behind));
+        }
+        label
+    }
+}
+
 /// Combined git metadata cached by the status line for one working directory.
 ///
 /// A summary may contain only one of the fields when the other probe fails. Renderers should treat
@@ -93,10 +132,34 @@ struct GhRepoParent {
     name_with_owner: String,
 }
 
-/// Returns the checked-out branch name for one status-line working directory.
+/// Returns the current checkout state for one status-line working directory.
 ///
-/// Detached HEADs, non-git directories, and command failures return `None` so the renderer can
-/// omit the branch item without surfacing a background lookup error.
+/// Non-git directories and command failures return `None` so the renderer can omit the branch item
+/// without surfacing a background lookup error.
+pub(crate) async fn current_git_branch(
+    runner: &dyn WorkspaceCommandExecutor,
+    cwd: &Path,
+) -> Option<StatusLineGitBranch> {
+    let output = run_git_command(
+        runner,
+        cwd,
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=normal",
+        ],
+    )
+    .await
+    .ok()?;
+    if !output.success() {
+        return None;
+    }
+
+    git_branch_from_status_output(&output.stdout)
+}
+
+/// Returns only the checked-out branch name for callers that do not render git status markers.
 pub(crate) async fn current_branch_name(
     runner: &dyn WorkspaceCommandExecutor,
     cwd: &Path,
@@ -109,6 +172,66 @@ pub(crate) async fn current_branch_name(
     }
 
     Some(output.stdout.trim().to_string()).filter(|name| !name.is_empty())
+}
+
+fn git_branch_from_status_output(stdout: &str) -> Option<StatusLineGitBranch> {
+    let mut branch_name = None;
+    let mut head_oid = None;
+    let mut ahead = 0;
+    let mut behind = 0;
+    let mut dirty = false;
+
+    for line in stdout.lines() {
+        if let Some(name) = line.strip_prefix("# branch.head ") {
+            if !name.is_empty() && name != "(detached)" && name != "(unknown)" {
+                branch_name = Some(name.to_string());
+            }
+            continue;
+        }
+
+        if let Some(oid) = line.strip_prefix("# branch.oid ") {
+            if !oid.is_empty() && oid != "(initial)" {
+                head_oid = Some(oid.to_string());
+            }
+            continue;
+        }
+
+        if let Some(ab) = line.strip_prefix("# branch.ab ") {
+            (ahead, behind) = parse_branch_ahead_behind(ab);
+            continue;
+        }
+
+        if !line.starts_with('#') {
+            dirty = true;
+        }
+    }
+
+    let name = branch_name.or_else(|| {
+        head_oid.map(|oid| {
+            let short = oid.chars().take(7).collect::<String>();
+            format!("detached {short}")
+        })
+    })?;
+
+    Some(StatusLineGitBranch {
+        name,
+        dirty,
+        ahead,
+        behind,
+    })
+}
+
+fn parse_branch_ahead_behind(value: &str) -> (u64, u64) {
+    let mut ahead = 0;
+    let mut behind = 0;
+    for token in value.split_whitespace() {
+        if let Some(count) = token.strip_prefix('+') {
+            ahead = count.parse().unwrap_or(0);
+        } else if let Some(count) = token.strip_prefix('-') {
+            behind = count.parse().unwrap_or(0);
+        }
+    }
+    (ahead, behind)
 }
 
 /// Resolves PR and branch-change metadata for one status-line working directory.
@@ -516,6 +639,75 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Mutex;
+
+    #[tokio::test]
+    async fn current_git_branch_parses_dirty_and_upstream_markers() {
+        let runner = FakeRunner::new(vec![response(
+            &[
+                "git",
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                "--untracked-files=normal",
+            ],
+            /*exit_code*/ 0,
+            "\
+# branch.oid abcdef1234567890
+# branch.head feature/hud
+# branch.upstream origin/feature/hud
+# branch.ab +2 -1
+1 .M N... 100644 100644 100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa src/main.rs
+? notes.txt
+",
+        )]);
+
+        let branch = current_git_branch(&runner, Path::new("/repo"))
+            .await
+            .expect("git branch");
+
+        assert_eq!(
+            branch,
+            StatusLineGitBranch {
+                name: "feature/hud".to_string(),
+                dirty: true,
+                ahead: 2,
+                behind: 1,
+            }
+        );
+        assert_eq!(branch.display_label(), "feature/hud* ↑2 ↓1");
+    }
+
+    #[tokio::test]
+    async fn current_git_branch_uses_detached_head_label() {
+        let runner = FakeRunner::new(vec![response(
+            &[
+                "git",
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                "--untracked-files=normal",
+            ],
+            /*exit_code*/ 0,
+            "\
+# branch.oid abcdef1234567890
+# branch.head (detached)
+",
+        )]);
+
+        let branch = current_git_branch(&runner, Path::new("/repo"))
+            .await
+            .expect("detached git branch");
+
+        assert_eq!(branch, StatusLineGitBranch::clean("detached abcdef1"));
+    }
+
+    #[test]
+    fn status_line_branch_label_omits_clean_zero_markers() {
+        assert_eq!(
+            StatusLineGitBranch::clean("main").display_label(),
+            "main".to_string()
+        );
+    }
 
     #[tokio::test]
     async fn branch_diff_stats_prefers_remote_default_ref_over_stale_local_branch() {

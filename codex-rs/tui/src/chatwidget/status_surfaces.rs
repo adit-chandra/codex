@@ -15,6 +15,7 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::PermissionProfile;
 use codex_utils_sandbox_summary::summarize_permission_profile;
+use std::fs;
 
 use super::status_state::TerminalTitleStatusKind;
 
@@ -532,7 +533,9 @@ impl ChatWidget {
         self.status_line_branch_pending = true;
         let tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            let branch = branch_summary::current_branch_name(runner.as_ref(), &cwd).await;
+            let branch = branch_summary::current_git_branch(runner.as_ref(), &cwd)
+                .await
+                .map(|branch| branch.display_label());
             tx.send(AppEvent::StatusLineBranchUpdated { cwd, branch });
         });
     }
@@ -642,6 +645,7 @@ impl ChatWidget {
                 },
             ),
             StatusLineItem::RawOutput => self.raw_output_mode().then(|| "raw output".to_string()),
+            StatusLineItem::CustomLine => codex_hud_custom_line(),
             StatusLineItem::ThreadTitle => self.thread_name.as_ref().map_or_else(
                 || self.thread_id.map(|id| id.to_string()),
                 |name| {
@@ -693,6 +697,7 @@ impl ChatWidget {
             StatusSurfacePreviewItem::SessionId => StatusLineItem::SessionId,
             StatusSurfacePreviewItem::FastMode => StatusLineItem::FastMode,
             StatusSurfacePreviewItem::RawOutput => StatusLineItem::RawOutput,
+            StatusSurfacePreviewItem::CustomLine => StatusLineItem::CustomLine,
             StatusSurfacePreviewItem::Model => StatusLineItem::ModelName,
             StatusSurfacePreviewItem::ModelWithReasoning => StatusLineItem::ModelWithReasoning,
             StatusSurfacePreviewItem::Reasoning => StatusLineItem::Reasoning,
@@ -1036,6 +1041,22 @@ fn approval_mode_display(config: &Config) -> String {
     config.permissions.approval_policy.value().to_string()
 }
 
+fn codex_hud_custom_line() -> Option<String> {
+    let path = dirs::home_dir()?.join(".codex-hud").join("config.json");
+    let raw = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    custom_line_from_hud_config(&value)
+}
+
+fn custom_line_from_hud_config(value: &serde_json::Value) -> Option<String> {
+    let custom_line = value
+        .get("display")
+        .and_then(|display| display.get("customLine"))
+        .and_then(|value| value.as_str())?
+        .trim();
+    (!custom_line.is_empty()).then(|| custom_line.to_string())
+}
+
 fn parse_items_with_invalids<T>(ids: impl IntoIterator<Item = String>) -> (Vec<T>, Vec<String>)
 where
     T: std::str::FromStr,
@@ -1054,4 +1075,37 @@ where
         }
     }
     (items, invalid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn custom_line_from_hud_config_trims_non_empty_value() {
+        let value = serde_json::json!({
+            "display": {
+                "customLine": "  ship local HUD  "
+            }
+        });
+
+        assert_eq!(
+            custom_line_from_hud_config(&value),
+            Some("ship local HUD".to_string())
+        );
+    }
+
+    #[test]
+    fn custom_line_from_hud_config_ignores_missing_or_blank_value() {
+        assert_eq!(
+            custom_line_from_hud_config(&serde_json::json!({
+                "display": {
+                    "customLine": "   "
+                }
+            })),
+            None
+        );
+        assert_eq!(custom_line_from_hud_config(&serde_json::json!({})), None);
+    }
 }

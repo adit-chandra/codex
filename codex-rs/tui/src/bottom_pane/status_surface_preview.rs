@@ -30,6 +30,7 @@ pub(crate) enum StatusSurfacePreviewItem {
     SessionId,
     FastMode,
     RawOutput,
+    CustomLine,
     Model,
     ModelWithReasoning,
     Reasoning,
@@ -62,6 +63,7 @@ impl StatusSurfacePreviewItem {
             StatusSurfacePreviewItem::SessionId => "550e8400-e29b-41d4",
             StatusSurfacePreviewItem::FastMode => "Fast on",
             StatusSurfacePreviewItem::RawOutput => "raw output",
+            StatusSurfacePreviewItem::CustomLine => "Custom HUD line",
             StatusSurfacePreviewItem::Model => "gpt-5.2-codex",
             StatusSurfacePreviewItem::ModelWithReasoning => "gpt-5.2-codex medium",
             StatusSurfacePreviewItem::Reasoning => "medium",
@@ -94,6 +96,7 @@ impl StatusSurfacePreviewItem {
             Self::SessionId,
             Self::FastMode,
             Self::RawOutput,
+            Self::CustomLine,
             Self::Model,
             Self::ModelWithReasoning,
             Self::Reasoning,
@@ -227,8 +230,20 @@ impl StatusSurfacePreviewData {
             self.value_for(item.preview_item())
                 .map(|value| (item, value.to_string()))
         });
-        status_line_from_segments(segments, use_theme_colors)
+        let lines = status_line_from_segments(segments, use_theme_colors)?;
+        Some(flatten_preview_lines(lines))
     }
+}
+
+fn flatten_preview_lines(lines: Vec<Line<'static>>) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (idx, line) in lines.into_iter().enumerate() {
+        if idx > 0 {
+            spans.push("   ".into());
+        }
+        spans.extend(line.spans);
+    }
+    Line::from(spans)
 }
 
 struct RateLimitPreviewCopy {

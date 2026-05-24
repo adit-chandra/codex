@@ -10,6 +10,8 @@ use super::status_line_setup::StatusLineItem;
 use crate::render::highlight::foreground_style_for_scopes;
 
 const STATUS_LINE_SEPARATOR: &str = " · ";
+const HUD_SEPARATOR: &str = " │ ";
+const HUD_BAR_EMPTY: char = '─';
 const STATUS_LINE_COLOR_SATURATION_PERCENT: u16 = 85;
 const STATUS_LINE_COLOR_BRIGHTNESS_PERCENT: u16 = 100;
 
@@ -46,7 +48,9 @@ impl StatusLineAccent {
             | StatusLineItem::TotalOutputTokens => Self::Usage,
             StatusLineItem::FiveHourLimit | StatusLineItem::WeeklyLimit => Self::Limit,
             StatusLineItem::CodexVersion | StatusLineItem::SessionId => Self::Metadata,
-            StatusLineItem::FastMode | StatusLineItem::RawOutput => Self::Mode,
+            StatusLineItem::FastMode | StatusLineItem::RawOutput | StatusLineItem::CustomLine => {
+                Self::Mode
+            }
             StatusLineItem::Permissions => Self::Mode,
             StatusLineItem::ApprovalMode => Self::Mode,
             StatusLineItem::ThreadTitle => Self::Thread,
@@ -81,7 +85,7 @@ impl StatusLineAccent {
 pub(crate) fn status_line_from_segments<I>(
     segments: I,
     use_theme_colors: bool,
-) -> Option<Line<'static>>
+) -> Option<Vec<Line<'static>>>
 where
     I: IntoIterator<Item = (StatusLineItem, String)>,
 {
@@ -94,7 +98,35 @@ fn status_line_from_segments_with_resolver<I, F>(
     segments: I,
     use_theme_colors: bool,
     theme_style_for_accent: F,
-) -> Option<Line<'static>>
+) -> Option<Vec<Line<'static>>>
+where
+    I: IntoIterator<Item = (StatusLineItem, String)>,
+    F: Fn(StatusLineAccent) -> Option<Style>,
+{
+    let segments: Vec<(StatusLineItem, String)> = segments
+        .into_iter()
+        .filter(|(_, text)| !text.is_empty())
+        .collect();
+    if segments.is_empty() {
+        return None;
+    }
+
+    if should_use_hud_layout(&segments) {
+        return Some(status_hud_lines(&segments, use_theme_colors));
+    }
+
+    Some(vec![status_line_legacy_from_segments(
+        segments,
+        use_theme_colors,
+        theme_style_for_accent,
+    )])
+}
+
+fn status_line_legacy_from_segments<I, F>(
+    segments: I,
+    use_theme_colors: bool,
+    theme_style_for_accent: F,
+) -> Line<'static>
 where
     I: IntoIterator<Item = (StatusLineItem, String)>,
     F: Fn(StatusLineAccent) -> Option<Style>,
@@ -120,7 +152,219 @@ where
         spans.push(Span::styled(text, style));
     }
 
-    (!spans.is_empty()).then(|| Line::from(spans))
+    Line::from(spans)
+}
+
+fn should_use_hud_layout(segments: &[(StatusLineItem, String)]) -> bool {
+    let has_identity = segments.iter().any(|(item, _)| {
+        matches!(
+            item,
+            StatusLineItem::ModelName | StatusLineItem::ModelWithReasoning
+        )
+    });
+    let has_meter = segments.iter().any(|(item, _)| {
+        matches!(
+            item,
+            StatusLineItem::ContextRemaining
+                | StatusLineItem::ContextUsed
+                | StatusLineItem::FiveHourLimit
+                | StatusLineItem::WeeklyLimit
+        )
+    });
+
+    has_identity && has_meter
+}
+
+fn status_hud_lines(
+    segments: &[(StatusLineItem, String)],
+    use_theme_colors: bool,
+) -> Vec<Line<'static>> {
+    let mut identity_spans = Vec::new();
+    let mut meter_spans = Vec::new();
+    let mut detail_spans = Vec::new();
+
+    for (item, text) in segments {
+        match item {
+            StatusLineItem::ContextRemaining
+            | StatusLineItem::ContextUsed
+            | StatusLineItem::FiveHourLimit
+            | StatusLineItem::WeeklyLimit => {
+                push_hud_separator(&mut meter_spans, use_theme_colors);
+                meter_spans.extend(hud_meter_spans(*item, text, use_theme_colors));
+            }
+            StatusLineItem::Status
+            | StatusLineItem::Permissions
+            | StatusLineItem::ApprovalMode
+            | StatusLineItem::FastMode
+            | StatusLineItem::RawOutput
+            | StatusLineItem::CustomLine
+            | StatusLineItem::TaskProgress => {
+                push_hud_separator(&mut detail_spans, use_theme_colors);
+                detail_spans.extend(hud_segment_spans(*item, text, use_theme_colors));
+            }
+            _ => {
+                push_hud_separator(&mut identity_spans, use_theme_colors);
+                identity_spans.extend(hud_segment_spans(*item, text, use_theme_colors));
+            }
+        }
+    }
+
+    [identity_spans, meter_spans, detail_spans]
+        .into_iter()
+        .filter(|spans| !spans.is_empty())
+        .map(Line::from)
+        .collect()
+}
+
+fn push_hud_separator(spans: &mut Vec<Span<'static>>, use_colors: bool) {
+    if !spans.is_empty() {
+        spans.push(Span::styled(HUD_SEPARATOR, hud_separator_style(use_colors)));
+    }
+}
+
+fn hud_segment_spans(item: StatusLineItem, text: &str, use_colors: bool) -> Vec<Span<'static>> {
+    if !use_colors {
+        return vec![Span::styled(text.to_string(), Style::default().dim())];
+    }
+
+    match item {
+        StatusLineItem::ModelName | StatusLineItem::ModelWithReasoning => vec![
+            Span::styled("[", hud_dim_style()),
+            Span::styled(text.to_string(), hud_model_style()),
+            Span::styled("]", hud_dim_style()),
+        ],
+        StatusLineItem::ProjectRoot | StatusLineItem::CurrentDir => {
+            vec![Span::styled(text.to_string(), hud_project_style())]
+        }
+        StatusLineItem::GitBranch => vec![
+            Span::styled("git:(", hud_dim_style()),
+            Span::styled(text.to_string(), hud_branch_style()),
+            Span::styled(")", hud_dim_style()),
+        ],
+        StatusLineItem::UsedTokens => vec![Span::styled(text.to_string(), hud_token_style())],
+        StatusLineItem::ThreadTitle | StatusLineItem::CodexVersion | StatusLineItem::SessionId => {
+            vec![Span::styled(text.to_string(), hud_secondary_style())]
+        }
+        StatusLineItem::TaskProgress => vec![Span::styled(text.to_string(), hud_mint_style())],
+        _ => vec![Span::styled(text.to_string(), hud_secondary_style())],
+    }
+}
+
+fn hud_meter_spans(item: StatusLineItem, text: &str, use_colors: bool) -> Vec<Span<'static>> {
+    if !use_colors {
+        return vec![Span::styled(text.to_string(), Style::default().dim())];
+    }
+
+    let mut parts = text.splitn(4, ' ');
+    let Some(label) = parts.next() else {
+        return vec![];
+    };
+    let Some(bar) = parts.next() else {
+        return vec![Span::styled(text.to_string(), hud_secondary_style())];
+    };
+    let Some(percent) = parts.next() else {
+        return vec![Span::styled(text.to_string(), hud_secondary_style())];
+    };
+    let suffix = parts.next();
+
+    let (filled_style, label_style) = match item {
+        StatusLineItem::ContextRemaining | StatusLineItem::ContextUsed => {
+            (hud_mint_style(), hud_label_style())
+        }
+        StatusLineItem::FiveHourLimit | StatusLineItem::WeeklyLimit => {
+            (hud_rate_style(), hud_label_style())
+        }
+        _ => (hud_secondary_style(), hud_label_style()),
+    };
+    let filled_style = hud_meter_threshold_style(filled_style, percent);
+    let empty_style = hud_bar_shadow_style(filled_style);
+
+    let mut spans = vec![
+        Span::styled(label.to_string(), label_style),
+        Span::styled(" ", hud_dim_style()),
+    ];
+    for ch in bar.chars() {
+        let style = if ch == HUD_BAR_EMPTY {
+            empty_style
+        } else {
+            filled_style
+        };
+        spans.push(Span::styled(ch.to_string(), style));
+    }
+    spans.push(Span::styled(" ", hud_dim_style()));
+    spans.push(Span::styled(percent.to_string(), filled_style));
+    if let Some(suffix) = suffix {
+        spans.push(Span::styled(format!(" {suffix}"), hud_secondary_style()));
+    }
+    spans
+}
+
+fn hud_meter_threshold_style(default_style: Style, percent: &str) -> Style {
+    match hud_meter_percent_value(percent) {
+        Some(value) if value > 80 => hud_orange_style(),
+        Some(value) if value > 60 => hud_yellow_style(),
+        _ => default_style,
+    }
+}
+
+fn hud_meter_percent_value(percent: &str) -> Option<i64> {
+    percent.strip_suffix('%')?.parse().ok()
+}
+
+fn hud_separator_style(use_colors: bool) -> Style {
+    if use_colors {
+        hud_dim_style()
+    } else {
+        Style::default().dim()
+    }
+}
+
+fn hud_model_style() -> Style {
+    Style::default().fg(Color::LightBlue).bold()
+}
+
+fn hud_project_style() -> Style {
+    Style::default().fg(Color::LightGreen).bold()
+}
+
+fn hud_branch_style() -> Style {
+    Style::default().fg(Color::LightCyan).bold()
+}
+
+fn hud_token_style() -> Style {
+    Style::default().fg(Color::LightYellow).bold()
+}
+
+fn hud_mint_style() -> Style {
+    Style::default().fg(Color::LightGreen).bold()
+}
+
+fn hud_rate_style() -> Style {
+    Style::default().fg(Color::LightBlue).bold()
+}
+
+fn hud_yellow_style() -> Style {
+    Style::default().fg(Color::Yellow).bold()
+}
+
+fn hud_orange_style() -> Style {
+    Style::default().fg(Color::LightRed).bold()
+}
+
+fn hud_bar_shadow_style(_filled_style: Style) -> Style {
+    Style::default().fg(Color::DarkGray)
+}
+
+fn hud_label_style() -> Style {
+    Style::default().fg(Color::DarkGray)
+}
+
+fn hud_secondary_style() -> Style {
+    Style::default().fg(Color::Gray)
+}
+
+fn hud_dim_style() -> Style {
+    Style::default().fg(Color::DarkGray)
 }
 
 fn soften_status_line_style(mut style: Style) -> Style {
@@ -189,18 +433,25 @@ mod tests {
             .collect::<String>()
     }
 
+    fn only_line(lines: Vec<Line<'static>>) -> Line<'static> {
+        assert_eq!(lines.len(), 1);
+        lines.into_iter().next().expect("one line")
+    }
+
     #[test]
     fn status_line_segments_preserve_order_and_plain_text() {
-        let line = status_line_from_segments_with_resolver(
-            [
-                (StatusLineItem::ModelName, "gpt-5".to_string()),
-                (StatusLineItem::CurrentDir, "/repo".to_string()),
-                (StatusLineItem::GitBranch, "main".to_string()),
-            ],
-            /*use_theme_colors*/ true,
-            |_| None,
-        )
-        .expect("status line");
+        let line = only_line(
+            status_line_from_segments_with_resolver(
+                [
+                    (StatusLineItem::ModelName, "gpt-5".to_string()),
+                    (StatusLineItem::CurrentDir, "/repo".to_string()),
+                    (StatusLineItem::GitBranch, "main".to_string()),
+                ],
+                /*use_theme_colors*/ true,
+                |_| None,
+            )
+            .expect("status line"),
+        );
 
         assert_eq!(line_text(&line), "gpt-5 · /repo · main");
         assert_eq!(line.spans[0].style.fg, Some(Color::Cyan));
@@ -213,18 +464,20 @@ mod tests {
 
     #[test]
     fn status_line_segments_dim_separators_and_use_theme_styles_first() {
-        let line = status_line_from_segments_with_resolver(
-            [
-                (StatusLineItem::ModelName, "gpt-5".to_string()),
-                (StatusLineItem::ContextUsed, "Context 12% used".to_string()),
-            ],
-            /*use_theme_colors*/ true,
-            |accent| match accent {
-                StatusLineAccent::Model => Some(Style::default().red()),
-                _ => None,
-            },
-        )
-        .expect("status line");
+        let line = only_line(
+            status_line_from_segments_with_resolver(
+                [
+                    (StatusLineItem::ModelName, "gpt-5".to_string()),
+                    (StatusLineItem::UsedTokens, "12 used".to_string()),
+                ],
+                /*use_theme_colors*/ true,
+                |accent| match accent {
+                    StatusLineAccent::Model => Some(Style::default().red()),
+                    _ => None,
+                },
+            )
+            .expect("status line"),
+        );
 
         assert_eq!(line.spans[0].style.fg, Some(Color::Red));
         assert!(!line.spans[0].style.add_modifier.contains(Modifier::DIM));
@@ -236,12 +489,14 @@ mod tests {
     #[test]
     #[allow(clippy::disallowed_methods)]
     fn status_line_segments_soften_rgb_theme_styles_without_dimming_text() {
-        let line = status_line_from_segments_with_resolver(
-            [(StatusLineItem::ModelName, "gpt-5".to_string())],
-            /*use_theme_colors*/ true,
-            |_| Some(Style::default().fg(Color::Rgb(255, 0, 0))),
-        )
-        .expect("status line");
+        let line = only_line(
+            status_line_from_segments_with_resolver(
+                [(StatusLineItem::ModelName, "gpt-5".to_string())],
+                /*use_theme_colors*/ true,
+                |_| Some(Style::default().fg(Color::Rgb(255, 0, 0))),
+            )
+            .expect("status line"),
+        );
 
         assert_eq!(line.spans[0].style.fg, Some(Color::Rgb(228, 11, 11)));
         assert!(!line.spans[0].style.add_modifier.contains(Modifier::DIM));
@@ -249,17 +504,19 @@ mod tests {
 
     #[test]
     fn status_line_segments_can_disable_theme_colors() {
-        let line = status_line_from_segments_with_resolver(
-            [
-                (StatusLineItem::ModelName, "gpt-5".to_string()),
-                (StatusLineItem::ContextUsed, "Context 12% used".to_string()),
-            ],
-            /*use_theme_colors*/ false,
-            |_| Some(Style::default().red()),
-        )
-        .expect("status line");
+        let line = only_line(
+            status_line_from_segments_with_resolver(
+                [
+                    (StatusLineItem::ModelName, "gpt-5".to_string()),
+                    (StatusLineItem::UsedTokens, "12 used".to_string()),
+                ],
+                /*use_theme_colors*/ false,
+                |_| Some(Style::default().red()),
+            )
+            .expect("status line"),
+        );
 
-        assert_eq!(line_text(&line), "gpt-5 · Context 12% used");
+        assert_eq!(line_text(&line), "gpt-5 · 12 used");
         assert_eq!(line.spans[0].style.fg, None);
         assert!(line.spans[0].style.add_modifier.contains(Modifier::DIM));
         assert!(line.spans[1].style.add_modifier.contains(Modifier::DIM));
@@ -269,12 +526,14 @@ mod tests {
 
     #[test]
     fn pull_request_number_uses_link_style() {
-        let line = status_line_from_segments_with_resolver(
-            [(StatusLineItem::PullRequestNumber, "PR #20252".to_string())],
-            /*use_theme_colors*/ false,
-            |_| None,
-        )
-        .expect("status line");
+        let line = only_line(
+            status_line_from_segments_with_resolver(
+                [(StatusLineItem::PullRequestNumber, "PR #20252".to_string())],
+                /*use_theme_colors*/ false,
+                |_| None,
+            )
+            .expect("status line"),
+        );
 
         assert_eq!(line.spans[0].style.fg, None);
         assert!(line.spans[0].style.add_modifier.contains(Modifier::DIM));
@@ -295,6 +554,55 @@ mod tests {
                 |_| None,
             ),
             None
+        );
+    }
+
+    #[test]
+    fn hud_layout_groups_identity_meters_and_detail_rows() {
+        let lines = status_line_from_segments_with_resolver(
+            [
+                (
+                    StatusLineItem::ModelWithReasoning,
+                    "gpt-5.5 xhigh".to_string(),
+                ),
+                (StatusLineItem::ProjectRoot, "codex".to_string()),
+                (StatusLineItem::GitBranch, "adit/chud* ↑2".to_string()),
+                (
+                    StatusLineItem::ContextUsed,
+                    "Context ━───────── 64%".to_string(),
+                ),
+                (
+                    StatusLineItem::FiveHourLimit,
+                    "Usage ━━━━━━━━━─ 85%".to_string(),
+                ),
+                (StatusLineItem::Permissions, "Workspace".to_string()),
+                (StatusLineItem::ApprovalMode, "on-request".to_string()),
+                (StatusLineItem::TaskProgress, "Tasks 2/5".to_string()),
+            ],
+            /*use_theme_colors*/ true,
+            |_| None,
+        )
+        .expect("hud lines");
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(
+            line_text(&lines[0]),
+            "[gpt-5.5 xhigh] │ codex │ git:(adit/chud* ↑2)"
+        );
+        assert_eq!(
+            line_text(&lines[1]),
+            "Context ━───────── 64% │ Usage ━━━━━━━━━─ 85%"
+        );
+        assert_eq!(line_text(&lines[2]), "Workspace │ on-request │ Tasks 2/5");
+        assert_eq!(
+            lines[1]
+                .spans
+                .iter()
+                .find(|span| span.content.as_ref() == "85%")
+                .expect("critical percent")
+                .style
+                .fg,
+            Some(Color::LightRed)
         );
     }
 }

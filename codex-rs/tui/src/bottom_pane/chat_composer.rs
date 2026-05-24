@@ -174,11 +174,12 @@ use super::footer::footer_hint_items_width;
 use super::footer::footer_line_width;
 use super::footer::inset_footer_hint_area;
 use super::footer::max_left_width_for_right;
-use super::footer::passive_footer_status_line;
+use super::footer::passive_footer_status_lines;
 use super::footer::render_context_right;
 use super::footer::render_footer_from_props;
 use super::footer::render_footer_hint_items;
 use super::footer::render_footer_line;
+use super::footer::render_footer_lines;
 use super::footer::reset_mode_after_activity;
 use super::footer::side_conversation_context_line;
 use super::footer::single_line_footer_layout;
@@ -421,6 +422,45 @@ fn plan_mode_nudge_line() -> Line<'static> {
         key_hint::plain(KeyCode::Esc).into(),
         " dismiss".into(),
     ])
+}
+
+fn truncate_footer_status_lines(
+    lines: &[Line<'static>],
+    available_width: usize,
+) -> Vec<Line<'static>> {
+    lines
+        .iter()
+        .cloned()
+        .map(|line| truncate_line_with_ellipsis_if_overflow(line, available_width))
+        .collect()
+}
+
+fn truncate_footer_status_lines_with_last_width(
+    lines: &[Line<'static>],
+    available_width: usize,
+    last_width: usize,
+) -> Vec<Line<'static>> {
+    let last_index = lines.len().saturating_sub(1);
+    lines
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, line)| {
+            let width = if index == last_index {
+                last_width
+            } else {
+                available_width
+            };
+            truncate_line_with_ellipsis_if_overflow(line, width)
+        })
+        .collect()
+}
+
+fn footer_status_last_width(lines: Option<&Vec<Line<'static>>>) -> u16 {
+    lines
+        .and_then(|lines| lines.last())
+        .map(|line| line.width() as u16)
+        .unwrap_or(0)
 }
 
 impl ChatComposer {
@@ -3889,7 +3929,7 @@ impl ChatComposer {
         }
     }
 
-    pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) -> bool {
+    pub(crate) fn set_status_line(&mut self, status_line: Option<Vec<Line<'static>>>) -> bool {
         if self.footer.status_line_value == status_line {
             return false;
         }
@@ -4202,15 +4242,15 @@ impl ChatComposer {
                     let available_width =
                         hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
                     let status_line_active = uses_passive_footer_status_layout(&footer_props);
-                    let combined_status_line = if status_line_active {
-                        passive_footer_status_line(&footer_props)
+                    let combined_status_lines = if status_line_active {
+                        passive_footer_status_lines(&footer_props)
                     } else {
                         None
                     };
-                    let mut truncated_status_line = if status_line_active {
-                        combined_status_line.as_ref().map(|line| {
-                            truncate_line_with_ellipsis_if_overflow(line.clone(), available_width)
-                        })
+                    let mut truncated_status_lines = if status_line_active {
+                        combined_status_lines
+                            .as_ref()
+                            .map(|lines| truncate_footer_status_lines(lines, available_width))
                     } else {
                         None
                     };
@@ -4229,10 +4269,7 @@ impl ChatComposer {
                     } else if let Some(items) = active_footer_hint_override {
                         footer_hint_items_width(items)
                     } else if status_line_active {
-                        truncated_status_line
-                            .as_ref()
-                            .map(|line| line.width() as u16)
-                            .unwrap_or(0)
+                        footer_status_last_width(truncated_status_lines.as_ref())
                     } else {
                         footer_line_width(
                             &footer_props,
@@ -4263,12 +4300,16 @@ impl ChatComposer {
                     if status_line_active
                         && let Some(max_left) = max_left_width_for_right(hint_rect, right_width)
                         && left_width > max_left
-                        && let Some(line) = combined_status_line.as_ref().map(|line| {
-                            truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
+                        && let Some(lines) = combined_status_lines.as_ref().map(|lines| {
+                            truncate_footer_status_lines_with_last_width(
+                                lines,
+                                available_width,
+                                max_left as usize,
+                            )
                         })
                     {
-                        left_width = line.width() as u16;
-                        truncated_status_line = Some(line);
+                        left_width = footer_status_last_width(Some(&lines));
+                        truncated_status_lines = Some(lines);
                     }
                     let can_show_left_and_context =
                         can_show_left_with_context(hint_rect, left_width, right_width);
@@ -4318,8 +4359,8 @@ impl ChatComposer {
                         match summary_left {
                             SummaryLeft::Default => {
                                 if status_line_active {
-                                    if let Some(line) = truncated_status_line.clone() {
-                                        render_footer_line(hint_rect, buf, line);
+                                    if let Some(lines) = truncated_status_lines.clone() {
+                                        render_footer_lines(hint_rect, buf, lines);
                                     } else {
                                         render_footer_from_props(
                                             hint_rect,
@@ -4355,8 +4396,8 @@ impl ChatComposer {
                     } else if let Some(items) = active_footer_hint_override {
                         render_footer_hint_items(hint_rect, buf, items);
                     } else if status_line_active {
-                        if let Some(line) = truncated_status_line {
-                            render_footer_line(hint_rect, buf, line);
+                        if let Some(lines) = truncated_status_lines {
+                            render_footer_lines(hint_rect, buf, lines);
                         }
                     } else {
                         render_footer_from_props(
@@ -4793,9 +4834,9 @@ mod tests {
             /*enhanced_keys_supported*/ true,
             |composer| {
                 composer.set_status_line_enabled(/*enabled*/ true);
-                composer.set_status_line(Some(Line::from(
+                composer.set_status_line(Some(vec![Line::from(
                     "gpt-5.4 high fast · ~/code/codex-1 · Context 0% used",
-                )));
+                )]));
                 composer.set_text_content("!git status".to_string(), Vec::new(), Vec::new());
             },
         );
@@ -4805,9 +4846,9 @@ mod tests {
             /*enhanced_keys_supported*/ true,
             |composer| {
                 composer.set_status_line_enabled(/*enabled*/ true);
-                composer.set_status_line(Some(Line::from(
+                composer.set_status_line(Some(vec![Line::from(
                     "gpt-5.4 high fast · ~/code/codex-1 · Context 0% used",
-                )));
+                )]));
                 composer.set_text_content("!".to_string(), Vec::new(), Vec::new());
                 let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
             },
@@ -4848,9 +4889,9 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         composer.set_status_line_enabled(/*enabled*/ true);
-        composer.set_status_line(Some(Line::from(
+        composer.set_status_line(Some(vec![Line::from(
             "gpt-5.4 high fast · ~/code/codex-1 · Context 0% used",
-        )));
+        )]));
         composer.set_text_content("!git status".to_string(), Vec::new(), Vec::new());
 
         let area = Rect::new(0, 0, 100, 9);
@@ -5023,10 +5064,10 @@ mod tests {
         );
         let url = "https://github.com/openai/codex/pull/20252";
         composer.set_status_line_enabled(/*enabled*/ true);
-        composer.set_status_line(Some(Line::from(Span::styled(
+        composer.set_status_line(Some(vec![Line::from(Span::styled(
             "PR #20252",
             Style::default().cyan().underlined(),
-        ))));
+        ))]));
         composer.set_status_line_hyperlink(Some(url.to_string()));
 
         let area = Rect::new(0, 0, 40, 6);

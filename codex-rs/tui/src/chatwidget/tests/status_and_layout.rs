@@ -2230,7 +2230,9 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
 
     assert_eq!(
         status_line_text(&chat),
-        Some(format!("gpt-5.4 xhigh fast · Context 0% used · {test_cwd}"))
+        Some(format!(
+            "[gpt-5.4 xhigh fast] │ {test_cwd}\nContext 0% used"
+        ))
     );
 
     chat.set_model("gpt-5.3-codex");
@@ -2239,7 +2241,7 @@ async fn status_line_model_with_reasoning_includes_fast_for_fast_capable_models(
     assert_eq!(
         status_line_text(&chat),
         Some(format!(
-            "gpt-5.3-codex xhigh · Context 0% used · {test_cwd}"
+            "[gpt-5.3-codex xhigh] │ {test_cwd}\nContext 0% used"
         ))
     );
 }

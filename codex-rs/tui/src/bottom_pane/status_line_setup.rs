@@ -134,6 +134,9 @@ pub(crate) enum StatusLineItem {
     /// Whether raw scrollback mode is currently active.
     RawOutput,
 
+    /// Custom text loaded from ~/.codex-hud/config.json.
+    CustomLine,
+
     /// Current thread title (if set by user).
     ThreadTitle,
 
@@ -182,6 +185,9 @@ impl StatusLineItem {
             StatusLineItem::SessionId => "Current thread identifier (omitted until thread starts)",
             StatusLineItem::FastMode => "Whether Fast mode is currently active",
             StatusLineItem::RawOutput => "Whether raw scrollback mode is active",
+            StatusLineItem::CustomLine => {
+                "Custom text from ~/.codex-hud/config.json display.customLine"
+            }
             StatusLineItem::ThreadTitle => {
                 "Current thread title, or thread identifier when unnamed"
             }
@@ -216,6 +222,7 @@ impl StatusLineItem {
             StatusLineItem::SessionId => StatusSurfacePreviewItem::SessionId,
             StatusLineItem::FastMode => StatusSurfacePreviewItem::FastMode,
             StatusLineItem::RawOutput => StatusSurfacePreviewItem::RawOutput,
+            StatusLineItem::CustomLine => StatusSurfacePreviewItem::CustomLine,
             StatusLineItem::ThreadTitle => StatusSurfacePreviewItem::ThreadTitle,
             StatusLineItem::TaskProgress => StatusSurfacePreviewItem::TaskProgress,
         }
