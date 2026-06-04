@@ -6,6 +6,10 @@
 
 use super::*;
 
+const STATUS_LINE_METER_WIDTH: usize = 10;
+const STATUS_LINE_METER_FILLED: char = '━';
+const STATUS_LINE_METER_EMPTY: char = '─';
+
 impl ChatWidget {
     /// Update the status indicator header and details.
     ///
@@ -378,7 +382,24 @@ impl ChatWidget {
     ) -> Option<String> {
         let window = window?;
         let remaining = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
-        Some(format!("{label} {remaining:.0}% left"))
+        Some(Self::status_line_meter_display(
+            label,
+            remaining.round() as i64,
+            "left",
+        ))
+    }
+
+    pub(super) fn status_line_meter_display(label: &str, percent: i64, suffix: &str) -> String {
+        let label = label.split_whitespace().collect::<Vec<_>>().join("-");
+        let percent = percent.clamp(0, 100);
+        let filled = (percent as usize * STATUS_LINE_METER_WIDTH + 50) / 100;
+        let empty = STATUS_LINE_METER_WIDTH - filled;
+        let bar = format!(
+            "{}{}",
+            STATUS_LINE_METER_FILLED.to_string().repeat(filled),
+            STATUS_LINE_METER_EMPTY.to_string().repeat(empty)
+        );
+        format!("{label} {bar} {percent}% {suffix}")
     }
 
     pub(super) fn status_line_reasoning_effort_label(

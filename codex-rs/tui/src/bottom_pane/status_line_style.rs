@@ -573,7 +573,7 @@ mod tests {
                 ),
                 (
                     StatusLineItem::FiveHourLimit,
-                    "Usage ━━━━━━━━━─ 85%".to_string(),
+                    "secondary-usage ━━━━━━━━━─ 85%".to_string(),
                 ),
                 (StatusLineItem::Permissions, "Workspace".to_string()),
                 (StatusLineItem::ApprovalMode, "on-request".to_string()),
@@ -591,7 +591,7 @@ mod tests {
         );
         assert_eq!(
             line_text(&lines[1]),
-            "Context ━───────── 64% │ Usage ━━━━━━━━━─ 85%"
+            "Context ━───────── 64% │ secondary-usage ━━━━━━━━━─ 85%"
         );
         assert_eq!(line_text(&lines[2]), "Workspace │ on-request │ Tasks 2/5");
         assert_eq!(
