@@ -255,17 +255,20 @@ fn hud_meter_spans(item: StatusLineItem, text: &str, use_colors: bool) -> Vec<Sp
         return vec![Span::styled(text.to_string(), Style::default().dim())];
     }
 
-    let mut parts = text.splitn(4, ' ');
-    let Some(label) = parts.next() else {
-        return vec![];
-    };
-    let Some(bar) = parts.next() else {
+    let parts = text.split_whitespace().collect::<Vec<_>>();
+    let Some(percent_index) = parts
+        .iter()
+        .position(|part| hud_meter_percent_value(part).is_some())
+    else {
         return vec![Span::styled(text.to_string(), hud_secondary_style())];
     };
-    let Some(percent) = parts.next() else {
+    if percent_index < 2 {
         return vec![Span::styled(text.to_string(), hud_secondary_style())];
-    };
-    let suffix = parts.next();
+    }
+    let label = parts[..percent_index - 1].join(" ");
+    let bar = parts[percent_index - 1];
+    let percent = parts[percent_index];
+    let suffix = (percent_index + 1 < parts.len()).then(|| parts[percent_index + 1..].join(" "));
 
     let (filled_style, label_style) = match item {
         StatusLineItem::ContextRemaining | StatusLineItem::ContextUsed => {
@@ -276,7 +279,7 @@ fn hud_meter_spans(item: StatusLineItem, text: &str, use_colors: bool) -> Vec<Sp
         }
         _ => (hud_secondary_style(), hud_label_style()),
     };
-    let filled_style = hud_meter_threshold_style(filled_style, percent);
+    let filled_style = hud_meter_threshold_style(item, filled_style, percent);
     let empty_style = hud_bar_shadow_style(filled_style);
 
     let mut spans = vec![
@@ -299,11 +302,54 @@ fn hud_meter_spans(item: StatusLineItem, text: &str, use_colors: bool) -> Vec<Sp
     spans
 }
 
-fn hud_meter_threshold_style(default_style: Style, percent: &str) -> Style {
-    match hud_meter_percent_value(percent) {
-        Some(value) if value > 80 => hud_orange_style(),
-        Some(value) if value > 60 => hud_yellow_style(),
-        _ => default_style,
+fn hud_meter_threshold_style(item: StatusLineItem, default_style: Style, percent: &str) -> Style {
+    let Some(value) = hud_meter_percent_value(percent) else {
+        return default_style;
+    };
+
+    match item {
+        StatusLineItem::ContextUsed => {
+            if value > 80 {
+                hud_orange_style()
+            } else if value > 60 {
+                hud_yellow_style()
+            } else {
+                default_style
+            }
+        }
+        StatusLineItem::ContextRemaining
+        | StatusLineItem::FiveHourLimit
+        | StatusLineItem::WeeklyLimit => {
+            if value <= 20 {
+                hud_orange_style()
+            } else if value <= 40 {
+                hud_yellow_style()
+            } else {
+                default_style
+            }
+        }
+        StatusLineItem::ModelName
+        | StatusLineItem::ModelWithReasoning
+        | StatusLineItem::Reasoning
+        | StatusLineItem::ProjectRoot
+        | StatusLineItem::CurrentDir
+        | StatusLineItem::GitBranch
+        | StatusLineItem::PullRequestNumber
+        | StatusLineItem::BranchChanges
+        | StatusLineItem::Status
+        | StatusLineItem::Permissions
+        | StatusLineItem::ApprovalMode
+        | StatusLineItem::UsedTokens
+        | StatusLineItem::ContextWindowSize
+        | StatusLineItem::TotalInputTokens
+        | StatusLineItem::TotalOutputTokens
+        | StatusLineItem::CodexVersion
+        | StatusLineItem::FastMode
+        | StatusLineItem::RawOutput
+        | StatusLineItem::CustomLine
+        | StatusLineItem::ThreadTitle
+        | StatusLineItem::SessionId
+        | StatusLineItem::TaskProgress => default_style,
     }
 }
 
@@ -573,7 +619,7 @@ mod tests {
                 ),
                 (
                     StatusLineItem::FiveHourLimit,
-                    "secondary-usage ━━━━━━━━━─ 85%".to_string(),
+                    "secondary usage ━━━━━━━━━─ 85% left".to_string(),
                 ),
                 (StatusLineItem::Permissions, "Workspace".to_string()),
                 (StatusLineItem::ApprovalMode, "on-request".to_string()),
@@ -591,7 +637,17 @@ mod tests {
         );
         assert_eq!(
             line_text(&lines[1]),
-            "Context ━───────── 64% │ secondary-usage ━━━━━━━━━─ 85%"
+            "Context ━───────── 64% │ secondary usage ━━━━━━━━━─ 85% left"
+        );
+        assert_eq!(
+            lines[1]
+                .spans
+                .iter()
+                .find(|span| span.content.as_ref() == "64%")
+                .expect("used percent")
+                .style
+                .fg,
+            Some(Color::Yellow)
         );
         assert_eq!(line_text(&lines[2]), "Workspace │ on-request │ Tasks 2/5");
         assert_eq!(
@@ -599,10 +655,10 @@ mod tests {
                 .spans
                 .iter()
                 .find(|span| span.content.as_ref() == "85%")
-                .expect("critical percent")
+                .expect("remaining percent")
                 .style
                 .fg,
-            Some(Color::LightRed)
+            Some(Color::LightBlue)
         );
     }
 }

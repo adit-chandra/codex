@@ -588,7 +588,7 @@ async fn status_line_uses_secondary_fallback_for_unsupported_window() {
 
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
-        Some("secondary-usage ━━━━━───── 50% left".to_string())
+        Some("secondary usage ━━━━━───── 50% left".to_string())
     );
 }
 

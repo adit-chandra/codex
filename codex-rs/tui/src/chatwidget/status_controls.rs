@@ -390,7 +390,7 @@ impl ChatWidget {
     }
 
     pub(super) fn status_line_meter_display(label: &str, percent: i64, suffix: &str) -> String {
-        let label = label.split_whitespace().collect::<Vec<_>>().join("-");
+        let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
         let percent = percent.clamp(0, 100);
         let filled = (percent as usize * STATUS_LINE_METER_WIDTH + 50) / 100;
         let empty = STATUS_LINE_METER_WIDTH - filled;
